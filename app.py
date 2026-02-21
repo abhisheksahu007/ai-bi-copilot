@@ -45,16 +45,17 @@ if uploaded_file:
 
     df.columns = df.columns.str.strip()
 
-    # remove commas & currency symbols
-    for col in df.columns:
-        df[col] = df[col].astype(str).str.replace(",", "")
-        df[col] = df[col].str.replace("₹", "").str.replace("$", "")
+    # remove currency symbols & commas
+    df = df.replace('[₹$,]', '', regex=True)
 
-    # ---------- CLEAN ----------
+    # remove blank cells
+    df = df.replace(r'^\s*$', pd.NA, regex=True)
+
+    # ---------- CLEAN DATA ----------
     df = df.drop_duplicates()
     df = df.fillna(method="ffill").fillna(0)
 
-    # convert numeric columns safely
+    # convert numeric where possible
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
@@ -73,22 +74,32 @@ if uploaded_file:
 
     st.divider()
 
-    # ---------- VISUALIZATION ----------
+    # ---------- CRASH-PROOF VISUALIZATION ----------
     st.subheader("Trend Visualization")
 
     plotted = False
-    for col in num_cols:
-        series = pd.to_numeric(df[col], errors="coerce").dropna()
-        if len(series) > 5:
+
+    for col in df.columns:
+        try:
+            series = pd.to_numeric(df[col], errors="coerce")
+            series = series.replace([float("inf"), float("-inf")], pd.NA).dropna()
+
+            if len(series) < 5:
+                continue
+
             fig = plt.figure()
-            plt.plot(series)
-            plt.title(col)
+            plt.plot(series.values)
+            plt.title(str(col))
             st.pyplot(fig)
+
             plotted = True
             break
 
+        except Exception:
+            continue
+
     if not plotted:
-        st.info("No numeric data available for visualization.")
+        st.info("No valid numeric data available for visualization.")
 
     st.divider()
 
@@ -99,6 +110,7 @@ if uploaded_file:
 
     if len(num_cols) > 0:
         clean_df = df[num_cols].dropna()
+
         if not clean_df.empty:
             model = IsolationForest(contamination=0.05, random_state=42)
             df.loc[clean_df.index, "anomaly"] = model.fit_predict(clean_df)
@@ -140,7 +152,6 @@ if uploaded_file:
             )
 
             insights = response.choices[0].message.content
-
         except:
             insights = None
 
@@ -211,7 +222,7 @@ if uploaded_file:
 
     st.divider()
 
-    # ---------- VOICE INSIGHTS ----------
+    # ---------- VOICE SUMMARY ----------
     st.subheader("Voice Summary")
 
     if st.button("Play Voice Insights"):
