@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 from sklearn.ensemble import IsolationForest
 from prophet import Prophet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
@@ -11,16 +11,24 @@ import os
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="InsightPilot AI", page_icon="📊", layout="wide")
 
-# ---------------- SIDEBAR ----------------
-st.sidebar.title("InsightPilot AI")
-st.sidebar.caption("Decision Intelligence Engine")
-st.sidebar.info("Upload data to generate insights instantly.")
+# ---------------- DARK MODE TOGGLE ----------------
+dark_mode = st.sidebar.toggle("🌗 Dark Mode", value=False)
 
-# ---------------- TITLE ----------------
+if dark_mode:
+    st.markdown("""
+        <style>
+        .stApp { background-color: #0E1117; color: white; }
+        </style>
+    """, unsafe_allow_html=True)
+
+# ---------------- HEADER ----------------
 st.title("📊 InsightPilot AI")
 st.caption("AI Business Intelligence Copilot")
 
-# ---------------- AZURE OPENAI CLIENT ----------------
+st.sidebar.title("InsightPilot AI")
+st.sidebar.caption("Decision Intelligence Engine")
+
+# ---------------- AZURE CLIENT ----------------
 client = None
 if os.getenv("AZURE_OPENAI_KEY"):
     try:
@@ -37,76 +45,94 @@ uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
 
 if uploaded_file:
 
-    # ---------- LOAD DATA SAFELY ----------
+    # ---------- LOAD & CLEAN DATA ----------
     try:
         df = pd.read_csv(uploaded_file, encoding="utf-8")
     except:
         df = pd.read_csv(uploaded_file, encoding="latin1")
 
     df.columns = df.columns.str.strip()
-
-    # remove currency symbols & commas
     df = df.replace('[₹$,]', '', regex=True)
-
-    # remove blank cells
     df = df.replace(r'^\s*$', pd.NA, regex=True)
-
-    # ---------- CLEAN DATA ----------
     df = df.drop_duplicates()
     df = df.fillna(method="ffill").fillna(0)
 
-    # convert numeric where possible
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
-    st.success("File uploaded successfully!")
-    st.subheader("Preview Data")
-    st.dataframe(df.head(), use_container_width=True)
+    num_cols = df.select_dtypes(include="number").columns
 
-    # ---------- METRICS ----------
-    num_cols = df.select_dtypes(include=["number"]).columns
+    st.success("Data uploaded successfully")
 
+    # ---------------- KPI METRICS WITH TRENDS ----------------
     st.subheader("Key Metrics")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Rows", len(df))
-    c2.metric("Columns", len(df.columns))
-    c3.metric("Numeric Columns", len(num_cols))
+
+    col1, col2, col3 = st.columns(3)
+
+    if len(num_cols) > 0:
+        metric_col = num_cols[0]
+        latest = df[metric_col].iloc[-1]
+        previous = df[metric_col].iloc[-2] if len(df) > 1 else latest
+        delta = latest - previous
+    else:
+        latest = previous = delta = 0
+
+    col1.metric("Rows", len(df))
+    col2.metric("Columns", len(df.columns))
+    col3.metric("Latest Value", round(latest, 2), delta=round(delta, 2))
 
     st.divider()
 
-    # ---------- CRASH-PROOF VISUALIZATION ----------
-    st.subheader("Trend Visualization")
+    # ---------------- AUTO CHART SUGGESTIONS ----------------
+    st.subheader("Smart Chart Suggestions")
 
-    plotted = False
+    if len(num_cols) >= 2:
+        suggested_x = num_cols[0]
+        suggested_y = num_cols[1]
 
-    for col in df.columns:
-        try:
-            series = pd.to_numeric(df[col], errors="coerce")
-            series = series.replace([float("inf"), float("-inf")], pd.NA).dropna()
+        st.caption(f"Suggested: Relationship between {suggested_x} and {suggested_y}")
 
-            if len(series) < 5:
-                continue
+        fig = px.scatter(df, x=suggested_x, y=suggested_y, trendline="ols")
+        st.plotly_chart(fig, use_container_width=True)
 
-            fig = plt.figure()
-            plt.plot(series.values)
-            plt.title(str(col))
-            st.pyplot(fig)
+    elif len(num_cols) == 1:
+        fig = px.line(df, y=num_cols[0], title="Trend")
+        st.plotly_chart(fig, use_container_width=True)
 
-            plotted = True
-            break
-
-        except Exception:
-            continue
-
-    if not plotted:
-        st.info("No valid numeric data available for visualization.")
+    else:
+        st.info("Not enough numeric data for suggestions.")
 
     st.divider()
 
-    # ---------- ANOMALY DETECTION ----------
+    # ---------------- MULTI-CHART DASHBOARD ----------------
+    st.subheader("Interactive Dashboard")
+
+    if len(num_cols) > 0:
+        selected_cols = st.multiselect(
+            "Select metrics to visualize",
+            num_cols,
+            default=list(num_cols[:2])
+        )
+
+        if selected_cols:
+            chart_type = st.selectbox(
+                "Chart Type",
+                ["Line", "Bar", "Area"]
+            )
+
+            if chart_type == "Line":
+                fig = px.line(df, y=selected_cols)
+            elif chart_type == "Bar":
+                fig = px.bar(df, y=selected_cols)
+            else:
+                fig = px.area(df, y=selected_cols)
+
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # ---------------- ANOMALY DETECTION ----------------
     st.subheader("Anomaly Detection")
-
-    anomalies = pd.DataFrame()
 
     if len(num_cols) > 0:
         clean_df = df[num_cols].dropna()
@@ -114,18 +140,16 @@ if uploaded_file:
         if not clean_df.empty:
             model = IsolationForest(contamination=0.05, random_state=42)
             df.loc[clean_df.index, "anomaly"] = model.fit_predict(clean_df)
-            anomalies = df[df["anomaly"] == -1]
 
-            st.write(f"Anomalies detected: {len(anomalies)}")
-            st.dataframe(anomalies)
-        else:
-            st.info("Numeric data empty after cleaning.")
-    else:
-        st.warning("No numeric columns available.")
+            anomalies = df[df["anomaly"] == -1]
+            st.write(f"Detected anomalies: {len(anomalies)}")
+
+            if not anomalies.empty:
+                st.dataframe(anomalies, use_container_width=True)
 
     st.divider()
 
-    # ---------- AI INSIGHTS ----------
+    # ---------------- AI INSIGHTS ----------------
     st.subheader("AI Generated Insights")
 
     insights = None
@@ -133,19 +157,14 @@ if uploaded_file:
     if client:
         try:
             prompt = f"""
-            Analyze this dataset summary and provide:
-            - key insights
-            - risks
-            - business recommendations
-
-            Summary:
+            Provide key insights, risks, and recommendations based on:
             {df.describe().to_string()}
             """
 
             response = client.chat.completions.create(
                 model=os.getenv("AZURE_DEPLOYMENT"),
                 messages=[
-                    {"role": "system", "content": "You are a business intelligence analyst."},
+                    {"role": "system", "content": "You are a business analyst."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3
@@ -156,47 +175,29 @@ if uploaded_file:
             insights = None
 
     if not insights:
-        insights = f"""
-        Dataset contains {len(df)} rows.
-        Numeric columns detected: {len(num_cols)}.
-        {len(anomalies)} anomalies detected.
-        Monitor unusual spikes and trends.
-        """
+        insights = "AI insights unavailable. Configure Azure OpenAI."
 
     st.write(insights)
 
     st.divider()
 
-    # ---------- NATURAL LANGUAGE Q&A ----------
-    st.subheader("Ask Questions About Your Data")
+    # ---------------- NATURAL LANGUAGE Q&A ----------------
+    st.subheader("Ask Questions")
 
-    question = st.text_input("Ask in plain English")
+    question = st.text_input("Ask about your data")
 
-    if question:
-        if client:
-            try:
-                q_prompt = f"""
-                Dataset summary:
-                {df.describe().to_string()}
-
-                Question: {question}
-                """
-
-                answer = client.chat.completions.create(
-                    model=os.getenv("AZURE_DEPLOYMENT"),
-                    messages=[{"role": "user", "content": q_prompt}]
-                )
-
-                st.write(answer.choices[0].message.content)
-            except:
-                st.info("AI Q&A unavailable.")
-        else:
-            st.info("Configure Azure OpenAI to enable AI answers.")
+    if question and client:
+        q_prompt = f"{df.describe().to_string()}\nQuestion: {question}"
+        answer = client.chat.completions.create(
+            model=os.getenv("AZURE_DEPLOYMENT"),
+            messages=[{"role": "user", "content": q_prompt}]
+        )
+        st.write(answer.choices[0].message.content)
 
     st.divider()
 
-    # ---------- FORECAST ----------
-    st.subheader("Forecast Future Trend")
+    # ---------------- FORECAST ----------------
+    st.subheader("Forecast")
 
     try:
         date_col = df.columns[0]
@@ -212,33 +213,27 @@ if uploaded_file:
         future = model.make_future_dataframe(periods=30)
         forecast = model.predict(future)
 
-        fig2 = plt.figure()
-        plt.plot(forecast["ds"], forecast["yhat"])
-        plt.title("30-Day Forecast")
-        st.pyplot(fig2)
+        fig = px.line(forecast, x="ds", y="yhat", title="30-Day Forecast")
+        st.plotly_chart(fig, use_container_width=True)
 
     except:
         st.info("Forecast requires a valid date column.")
 
     st.divider()
 
-    # ---------- VOICE SUMMARY ----------
-    st.subheader("Voice Summary")
-
-    if st.button("Play Voice Insights"):
+    # ---------------- VOICE SUMMARY ----------------
+    if st.button("🔊 Play Voice Insights"):
         try:
             from gtts import gTTS
             tts = gTTS(insights)
             tts.save("voice.mp3")
-            audio_file = open("voice.mp3", "rb")
-            st.audio(audio_file.read(), format="audio/mp3")
+            audio = open("voice.mp3", "rb")
+            st.audio(audio.read(), format="audio/mp3")
         except:
-            st.info("Voice feature unavailable in this environment.")
+            st.info("Voice feature unavailable.")
 
-    st.divider()
-
-    # ---------- PDF REPORT ----------
-    if st.button("Generate Executive Report"):
+    # ---------------- PDF REPORT ----------------
+    if st.button("📄 Generate Executive Report"):
         doc = SimpleDocTemplate("report.pdf")
         styles = getSampleStyleSheet()
 
