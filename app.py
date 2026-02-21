@@ -5,8 +5,8 @@ from sklearn.ensemble import IsolationForest
 from prophet import Prophet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
-import os
 from openai import AzureOpenAI
+import os
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="InsightPilot AI", page_icon="📊", layout="wide")
@@ -20,12 +20,24 @@ st.sidebar.info("Upload data to generate insights instantly.")
 st.title("📊 InsightPilot AI")
 st.caption("AI Business Intelligence Copilot")
 
+# ---------------- AZURE OPENAI CLIENT ----------------
+client = None
+if os.getenv("AZURE_OPENAI_KEY"):
+    try:
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_KEY"),
+            api_version="2024-02-01",
+            azure_endpoint=os.getenv("AZURE_ENDPOINT")
+        )
+    except:
+        client = None
+
 # ---------------- FILE UPLOAD ----------------
 uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
 
 if uploaded_file:
 
-    # -------- LOAD DATA SAFELY --------
+    # ---------- LOAD DATA SAFELY ----------
     try:
         df = pd.read_csv(uploaded_file, encoding="utf-8")
     except:
@@ -38,67 +50,55 @@ if uploaded_file:
         df[col] = df[col].astype(str).str.replace(",", "")
         df[col] = df[col].str.replace("₹", "").str.replace("$", "")
 
-    # -------- CLEAN DATA --------
+    # ---------- CLEAN ----------
     df = df.drop_duplicates()
     df = df.fillna(method="ffill").fillna(0)
 
-    st.success("File uploaded successfully!")
-
-    st.subheader("Preview Data")
-    st.dataframe(df.head(), use_container_width=True)
-
-    # -------- DETECT NUMERIC COLUMNS --------
-    num_cols = df.select_dtypes(include=["number"]).columns
-
-    # attempt numeric conversion for object columns
+    # convert numeric columns safely
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
+    st.success("File uploaded successfully!")
+    st.subheader("Preview Data")
+    st.dataframe(df.head(), use_container_width=True)
+
+    # ---------- METRICS ----------
     num_cols = df.select_dtypes(include=["number"]).columns
 
-    # -------- METRICS --------
     st.subheader("Key Metrics")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rows", len(df))
-    col2.metric("Columns", len(df.columns))
-    col3.metric("Numeric Columns", len(num_cols))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows", len(df))
+    c2.metric("Columns", len(df.columns))
+    c3.metric("Numeric Columns", len(num_cols))
 
     st.divider()
 
-    # -------- VISUALIZATION (CRASH SAFE) --------
+    # ---------- VISUALIZATION ----------
     st.subheader("Trend Visualization")
 
     plotted = False
     for col in num_cols:
-        try:
-            series = pd.to_numeric(df[col], errors="coerce").dropna()
-
-            if len(series) < 5:
-                continue
-
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        if len(series) > 5:
             fig = plt.figure()
             plt.plot(series)
             plt.title(col)
             st.pyplot(fig)
-
             plotted = True
             break
-        except:
-            continue
 
     if not plotted:
         st.info("No numeric data available for visualization.")
 
     st.divider()
 
-    # -------- ANOMALY DETECTION --------
+    # ---------- ANOMALY DETECTION ----------
     st.subheader("Anomaly Detection")
 
     anomalies = pd.DataFrame()
 
     if len(num_cols) > 0:
         clean_df = df[num_cols].dropna()
-
         if not clean_df.empty:
             model = IsolationForest(contamination=0.05, random_state=42)
             df.loc[clean_df.index, "anomaly"] = model.fit_predict(clean_df)
@@ -106,7 +106,6 @@ if uploaded_file:
 
             st.write(f"Anomalies detected: {len(anomalies)}")
             st.dataframe(anomalies)
-
         else:
             st.info("Numeric data empty after cleaning.")
     else:
@@ -114,76 +113,78 @@ if uploaded_file:
 
     st.divider()
 
-    # -------- AZURE OPENAI INSIGHTS --------
+    # ---------- AI INSIGHTS ----------
     st.subheader("AI Generated Insights")
 
-    insights = "AI insights unavailable."
+    insights = None
 
-    try:
-        client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_KEY"),
-            api_version="2024-02-01",
-            azure_endpoint=os.getenv("AZURE_ENDPOINT")
-        )
+    if client:
+        try:
+            prompt = f"""
+            Analyze this dataset summary and provide:
+            - key insights
+            - risks
+            - business recommendations
 
-        prompt = f"""
-        Analyze this dataset summary and provide:
-        - key insights
-        - risks
-        - business recommendations
+            Summary:
+            {df.describe().to_string()}
+            """
 
-        Summary:
-        {df.describe().to_string()}
-        """
+            response = client.chat.completions.create(
+                model=os.getenv("AZURE_DEPLOYMENT"),
+                messages=[
+                    {"role": "system", "content": "You are a business intelligence analyst."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3
+            )
 
-        response = client.chat.completions.create(
-            model=os.getenv("AZURE_DEPLOYMENT"),
-            messages=[{"role": "user", "content": prompt}]
-        )
+            insights = response.choices[0].message.content
 
-        insights = response.choices[0].message.content
+        except:
+            insights = None
 
-    except Exception as e:
-        st.warning("Azure AI unavailable. Showing basic insights.")
-
+    if not insights:
         insights = f"""
-        Dataset contains {len(df)} records.
+        Dataset contains {len(df)} rows.
         Numeric columns detected: {len(num_cols)}.
-        Detected {len(anomalies)} anomalies.
-        Monitor unusual spikes for risk mitigation.
+        {len(anomalies)} anomalies detected.
+        Monitor unusual spikes and trends.
         """
 
     st.write(insights)
 
     st.divider()
 
-    # -------- NATURAL LANGUAGE Q&A --------
+    # ---------- NATURAL LANGUAGE Q&A ----------
     st.subheader("Ask Questions About Your Data")
 
     question = st.text_input("Ask in plain English")
 
     if question:
-        try:
-            q_prompt = f"""
-            Dataset summary:
-            {df.describe().to_string()}
+        if client:
+            try:
+                q_prompt = f"""
+                Dataset summary:
+                {df.describe().to_string()}
 
-            Question: {question}
-            """
+                Question: {question}
+                """
 
-            answer = client.chat.completions.create(
-                model=os.getenv("AZURE_DEPLOYMENT"),
-                messages=[{"role": "user", "content": q_prompt}]
-            )
+                answer = client.chat.completions.create(
+                    model=os.getenv("AZURE_DEPLOYMENT"),
+                    messages=[{"role": "user", "content": q_prompt}]
+                )
 
-            st.write(answer.choices[0].message.content)
-
-        except:
-            st.info("AI Q&A unavailable without Azure configuration.")
+                st.write(answer.choices[0].message.content)
+            except:
+                st.info("AI Q&A unavailable.")
+        else:
+            st.info("Configure Azure OpenAI to enable AI answers.")
 
     st.divider()
 
-    # -------- FORECASTING --------
+    # ---------- FORECAST ----------
     st.subheader("Forecast Future Trend")
 
     try:
@@ -210,7 +211,7 @@ if uploaded_file:
 
     st.divider()
 
-    # -------- VOICE INSIGHTS (SAFE) --------
+    # ---------- VOICE INSIGHTS ----------
     st.subheader("Voice Summary")
 
     if st.button("Play Voice Insights"):
@@ -225,7 +226,7 @@ if uploaded_file:
 
     st.divider()
 
-    # -------- PDF REPORT --------
+    # ---------- PDF REPORT ----------
     if st.button("Generate Executive Report"):
         doc = SimpleDocTemplate("report.pdf")
         styles = getSampleStyleSheet()
