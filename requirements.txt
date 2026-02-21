@@ -6,3 +6,4 @@ prophet
 reportlab
 gtts
 openai
+statsmodels
