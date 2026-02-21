@@ -5,32 +5,27 @@ from sklearn.ensemble import IsolationForest
 from prophet import Prophet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
-from gtts import gTTS
 import os
 from openai import AzureOpenAI
 
-# ------------------ PAGE CONFIG ------------------
-st.set_page_config(
-    page_title="InsightPilot AI",
-    page_icon="📊",
-    layout="wide"
-)
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="InsightPilot AI", page_icon="📊", layout="wide")
 
-# ------------------ SIDEBAR ------------------
+# ---------------- SIDEBAR ----------------
 st.sidebar.title("InsightPilot AI")
 st.sidebar.caption("Decision Intelligence Engine")
-st.sidebar.info("Upload your data to generate insights instantly.")
+st.sidebar.info("Upload data to generate insights instantly.")
 
-# ------------------ TITLE ------------------
+# ---------------- TITLE ----------------
 st.title("📊 InsightPilot AI")
 st.caption("AI Business Intelligence Copilot")
 
-# ------------------ FILE UPLOAD ------------------
+# ---------------- FILE UPLOAD ----------------
 uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
 
 if uploaded_file:
 
-    # ---------- LOAD DATA (handles encoding issues) ----------
+    # -------- LOAD DATA SAFELY --------
     try:
         df = pd.read_csv(uploaded_file, encoding="utf-8")
     except:
@@ -38,39 +33,65 @@ if uploaded_file:
 
     df.columns = df.columns.str.strip()
 
-    st.success("File uploaded successfully!")
+    # remove commas & currency symbols
+    for col in df.columns:
+        df[col] = df[col].astype(str).str.replace(",", "")
+        df[col] = df[col].str.replace("₹", "").str.replace("$", "")
 
-    # ---------- DATA CLEANING ----------
+    # -------- CLEAN DATA --------
     df = df.drop_duplicates()
     df = df.fillna(method="ffill").fillna(0)
+
+    st.success("File uploaded successfully!")
 
     st.subheader("Preview Data")
     st.dataframe(df.head(), use_container_width=True)
 
-    # ---------- METRICS ----------
-    num_cols = df.select_dtypes(include="number").columns
+    # -------- DETECT NUMERIC COLUMNS --------
+    num_cols = df.select_dtypes(include=["number"]).columns
 
+    # attempt numeric conversion for object columns
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="ignore")
+
+    num_cols = df.select_dtypes(include=["number"]).columns
+
+    # -------- METRICS --------
     st.subheader("Key Metrics")
     col1, col2, col3 = st.columns(3)
-
     col1.metric("Rows", len(df))
     col2.metric("Columns", len(df.columns))
     col3.metric("Numeric Columns", len(num_cols))
 
     st.divider()
 
-    # ---------- VISUALIZATION ----------
+    # -------- VISUALIZATION (CRASH SAFE) --------
     st.subheader("Trend Visualization")
 
-    for col in num_cols[:2]:
-        fig = plt.figure()
-        plt.plot(df[col])
-        plt.title(col)
-        st.pyplot(fig)
+    plotted = False
+    for col in num_cols:
+        try:
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+
+            if len(series) < 5:
+                continue
+
+            fig = plt.figure()
+            plt.plot(series)
+            plt.title(col)
+            st.pyplot(fig)
+
+            plotted = True
+            break
+        except:
+            continue
+
+    if not plotted:
+        st.info("No numeric data available for visualization.")
 
     st.divider()
 
-    # ---------- ANOMALY DETECTION ----------
+    # -------- ANOMALY DETECTION --------
     st.subheader("Anomaly Detection")
 
     anomalies = pd.DataFrame()
@@ -81,8 +102,8 @@ if uploaded_file:
         if not clean_df.empty:
             model = IsolationForest(contamination=0.05, random_state=42)
             df.loc[clean_df.index, "anomaly"] = model.fit_predict(clean_df)
-
             anomalies = df[df["anomaly"] == -1]
+
             st.write(f"Anomalies detected: {len(anomalies)}")
             st.dataframe(anomalies)
 
@@ -93,8 +114,10 @@ if uploaded_file:
 
     st.divider()
 
-    # ---------- AI INSIGHTS (AZURE OPENAI) ----------
+    # -------- AZURE OPENAI INSIGHTS --------
     st.subheader("AI Generated Insights")
+
+    insights = "AI insights unavailable."
 
     try:
         client = AzureOpenAI(
@@ -121,14 +144,20 @@ if uploaded_file:
         insights = response.choices[0].message.content
 
     except Exception as e:
-        insights = "AI insights unavailable. Check API configuration."
-        st.warning(str(e))
+        st.warning("Azure AI unavailable. Showing basic insights.")
+
+        insights = f"""
+        Dataset contains {len(df)} records.
+        Numeric columns detected: {len(num_cols)}.
+        Detected {len(anomalies)} anomalies.
+        Monitor unusual spikes for risk mitigation.
+        """
 
     st.write(insights)
 
     st.divider()
 
-    # ---------- NATURAL LANGUAGE Q&A ----------
+    # -------- NATURAL LANGUAGE Q&A --------
     st.subheader("Ask Questions About Your Data")
 
     question = st.text_input("Ask in plain English")
@@ -136,8 +165,7 @@ if uploaded_file:
     if question:
         try:
             q_prompt = f"""
-            Answer the question based on this dataset summary:
-
+            Dataset summary:
             {df.describe().to_string()}
 
             Question: {question}
@@ -151,11 +179,11 @@ if uploaded_file:
             st.write(answer.choices[0].message.content)
 
         except:
-            st.warning("Unable to process question.")
+            st.info("AI Q&A unavailable without Azure configuration.")
 
     st.divider()
 
-    # ---------- FORECASTING ----------
+    # -------- FORECASTING --------
     st.subheader("Forecast Future Trend")
 
     try:
@@ -178,22 +206,26 @@ if uploaded_file:
         st.pyplot(fig2)
 
     except:
-        st.info("Forecast requires a date column.")
+        st.info("Forecast requires a valid date column.")
 
     st.divider()
 
-    # ---------- VOICE INSIGHTS ----------
+    # -------- VOICE INSIGHTS (SAFE) --------
     st.subheader("Voice Summary")
 
     if st.button("Play Voice Insights"):
-        tts = gTTS(insights)
-        tts.save("voice.mp3")
-        audio_file = open("voice.mp3", "rb")
-        st.audio(audio_file.read(), format="audio/mp3")
+        try:
+            from gtts import gTTS
+            tts = gTTS(insights)
+            tts.save("voice.mp3")
+            audio_file = open("voice.mp3", "rb")
+            st.audio(audio_file.read(), format="audio/mp3")
+        except:
+            st.info("Voice feature unavailable in this environment.")
 
     st.divider()
 
-    # ---------- PDF REPORT ----------
+    # -------- PDF REPORT --------
     if st.button("Generate Executive Report"):
         doc = SimpleDocTemplate("report.pdf")
         styles = getSampleStyleSheet()
